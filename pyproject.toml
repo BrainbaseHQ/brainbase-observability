@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brainbase-observability"
+version = "0.1.0"
+description = "Brainbase shared observability: structlog + Grafana Loki + OTel"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Brainbase Labs", email = "engineering@brainbaselabs.com" }]
+keywords = ["logging", "observability", "structlog", "opentelemetry", "loki"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "structlog>=24.1.0",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.100.0"]
+aiohttp = ["aiohttp>=3.9.0"]
+instrumentations = [
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-requests>=0.48b0",
+    "opentelemetry-instrumentation-aiohttp-server>=0.48b0",
+    "opentelemetry-instrumentation-aiohttp-client>=0.48b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.48b0",
+    "opentelemetry-instrumentation-asyncpg>=0.48b0",
+    "opentelemetry-instrumentation-psycopg>=0.48b0",
+    "opentelemetry-instrumentation-redis>=0.48b0",
+]
+
+[project.urls]
+Homepage = "https://github.com/BrainbaseHQ/brainbase-observability"
+Issues = "https://github.com/BrainbaseHQ/brainbase-observability/issues"
+
+[tool.setuptools]
+packages = ["observability"]
