@@ -48,11 +48,26 @@ def run_cron_entrypoint(func: _F) -> _F:
             return result
         except SystemExit as exc:
             duration_ms = (time.perf_counter() - start) * 1000.0
-            _logger.warning(
-                "cron_run_sysexit",
-                duration_ms=round(duration_ms, 2),
-                exit_code=exc.code,
-            )
+            # `sys.exit(0)` and `sys.exit()` both indicate clean success.
+            # `sys.exit(<non-zero>)` and `sys.exit(<string>)` indicate failure.
+            # Don't blanket-log every SystemExit as a warning — the common case
+            # for crons is a successful `sys.exit(0)` at the end of main().
+            code = exc.code
+            is_success = code is None or code == 0
+            if is_success:
+                _logger.info(
+                    "cron_run_end",
+                    duration_ms=round(duration_ms, 2),
+                    exit_code=code,
+                    status="ok",
+                )
+            else:
+                _logger.warning(
+                    "cron_run_failed_exit",
+                    duration_ms=round(duration_ms, 2),
+                    exit_code=code,
+                    status="error",
+                )
             raise
         except Exception:
             duration_ms = (time.perf_counter() - start) * 1000.0

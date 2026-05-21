@@ -37,9 +37,12 @@ _environment: str = "unknown"
 _internal_logger = logging.getLogger("observability._core")
 
 # Async-safe context. Survives await boundaries.
+# `_extra_context_var` defaults to None (NOT a shared `{}`): every reader
+# converts to a dict, so we never have to defend against accidental in-place
+# mutation of a shared default object.
 _request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
-_extra_context_var: ContextVar[dict[str, Any]] = ContextVar(
-    "extra_context", default={}
+_extra_context_var: ContextVar[dict[str, Any] | None] = ContextVar(
+    "extra_context", default=None
 )
 
 
@@ -64,7 +67,7 @@ def current_request_id() -> str | None:
 
 def bind_context(**kv: Any) -> None:
     """Add arbitrary key/value pairs to the current context's structured log fields."""
-    current = dict(_extra_context_var.get())
+    current = dict(_extra_context_var.get() or {})
     current.update(kv)
     _extra_context_var.set(current)
 
@@ -72,7 +75,7 @@ def bind_context(**kv: Any) -> None:
 def clear_context() -> None:
     """Clear request_id and bound context. Call at request end."""
     _request_id_var.set(None)
-    _extra_context_var.set({})
+    _extra_context_var.set(None)
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +86,7 @@ def _inject_context(_logger: Any, _method_name: str, event_dict: dict[str, Any])
     rid = _request_id_var.get()
     if rid:
         event_dict.setdefault("request_id", rid)
-    extras = _extra_context_var.get()
+    extras = _extra_context_var.get() or {}
     if extras:
         for k, v in extras.items():
             event_dict.setdefault(k, v)
@@ -179,6 +182,14 @@ class _LokiSender:
                 _internal_logger.warning("loki sender loop error: %s", exc)
                 time.sleep(0.5)
 
+        # Shutdown drain: pull every remaining item off the queue and flush
+        # in one final batch so logs accumulated during the SIGTERM window
+        # actually ship instead of getting dropped silently.
+        while True:
+            try:
+                buf.append(self._q.get_nowait())
+            except queue.Empty:
+                break
         if buf:
             try:
                 self._flush(client, headers, buf)
@@ -219,6 +230,7 @@ class _LokiSender:
 
 
 _loki_sender: _LokiSender | None = None
+_otel_logger_provider: Any | None = None
 
 
 def _loki_processor(_logger: Any, _method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
@@ -242,6 +254,58 @@ def _loki_processor(_logger: Any, _method_name: str, event_dict: dict[str, Any])
     return event_dict
 
 
+# Maps structlog method names → OTel SeverityNumber values (per OTel spec).
+_OTEL_SEVERITY: dict[str, int] = {
+    "debug": 5,
+    "info": 9,
+    "warning": 13,
+    "warn": 13,
+    "error": 17,
+    "critical": 21,
+    "exception": 17,
+}
+
+
+def _otel_processor(
+    _logger: Any, method_name: str, event_dict: dict[str, Any]
+) -> dict[str, Any]:
+    """Forward every structlog event to the OTel collector.
+
+    The stdlib `LoggingHandler` attached in `_init_otel` only sees calls made
+    via `logging.getLogger(...).<level>(...)`. Because structlog's
+    `PrintLoggerFactory` writes via `print()`, structlog events bypass the
+    stdlib logging tree entirely. This processor closes that gap by emitting
+    one OTel LogRecord per structlog event, in addition to the existing Loki
+    + stdout sinks.
+    """
+    if _otel_logger_provider is None:
+        return event_dict
+    try:
+        import json as _json
+
+        from opentelemetry.sdk._logs import LogRecord  # type: ignore[attr-defined]
+
+        body = _json.dumps(event_dict, default=str, separators=(",", ":"))
+        severity = _OTEL_SEVERITY.get(method_name.lower(), 9)
+        otel_logger = _otel_logger_provider.get_logger("brainbase-observability")
+        otel_logger.emit(
+            LogRecord(
+                timestamp=int(time.time() * 1e9),
+                severity_number=severity,
+                severity_text=method_name.upper(),
+                body=body,
+                attributes={
+                    "service": event_dict.get("service", _service_name),
+                    "request_id": event_dict.get("request_id"),
+                    "environment": event_dict.get("environment", _environment),
+                },
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        _internal_logger.warning("otel processor error: %s", exc)
+    return event_dict
+
+
 # ---------------------------------------------------------------------------
 # OTel logs init (HTTPJSONLogExporter — borrowed from kafka-vm-proxy, fixed)
 # ---------------------------------------------------------------------------
@@ -250,7 +314,13 @@ def _init_otel(collector_url: str) -> None:
     """Wire OTel logs export to the custom HTTP/JSON collector.
 
     Best-effort: any failure leaves the app running with structlog→stdout still working.
+
+    Note: imports under `opentelemetry._logs` / `opentelemetry.sdk._logs` use
+    the underscore-prefixed paths intentionally. As of opentelemetry-sdk 1.42
+    the public modules at `opentelemetry.logs` / `opentelemetry.sdk.logs` do
+    NOT exist; the logs SDK is shipped under the experimental namespace.
     """
+    global _otel_logger_provider
     try:
         from opentelemetry import _logs as otel_logs
         from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
@@ -268,19 +338,25 @@ def _init_otel(collector_url: str) -> None:
         )
         provider = LoggerProvider(resource=resource)
         exporter = HTTPJSONLogExporter(endpoint=collector_url)
+        # 5s shutdown timeout (was 30s): cron containers receive SIGTERM with
+        # a hard kill deadline; we'd rather drop a final batch than stall the
+        # process for half a minute waiting for a sluggish collector to ACK.
         provider.add_log_record_processor(
             BatchLogRecordProcessor(
                 exporter,
                 schedule_delay_millis=1000,
-                export_timeout_millis=30000,
+                export_timeout_millis=5000,
                 max_queue_size=2048,
                 max_export_batch_size=512,
             )
         )
         otel_logs.set_logger_provider(provider)
+        _otel_logger_provider = provider
 
         # Bridge stdlib logging → OTel so any third-party `logger.error(...)`
-        # also flows to the collector.
+        # also flows to the collector. Structlog events flow via
+        # `_otel_processor` (see `init_observability`) because they bypass
+        # stdlib's logging tree.
         handler = LoggingHandler(level=logging.NOTSET, logger_provider=provider)
         logging.getLogger().addHandler(handler)
 
@@ -366,6 +442,10 @@ def init_observability(
     if otel_url:
         _init_otel(otel_url)
 
+    # `format_exc_info` renders the traceback as a plain string the
+    # ConsoleRenderer can prefix to stdout and the JSONRenderer can put under
+    # an "exception" key. (Greptile flagged this as deprecated; verified
+    # against structlog 25.5.0 — still supported, emits no warning.)
     processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         _add_severity,
@@ -376,6 +456,8 @@ def init_observability(
     ]
     if _loki_sender is not None:
         processors.append(_loki_processor)
+    if otel_url:
+        processors.append(_otel_processor)
     processors.append(renderer)
 
     structlog.configure(

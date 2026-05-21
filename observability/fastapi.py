@@ -22,7 +22,6 @@ What it does:
 from __future__ import annotations
 
 import time
-import traceback
 from typing import Any
 
 from ._core import (
@@ -78,9 +77,11 @@ def install_fastapi(app: Any, *, instrument: bool = True) -> None:
                 status_code = response.status_code
                 response.headers["X-Request-ID"] = rid
                 return response
-            except Exception:
-                _logger.exception("http_request_unhandled_exception")
-                raise
+            # No `except Exception` here: route-raised exceptions are caught by
+            # Starlette's ExceptionMiddleware (which sits inside call_next) and
+            # routed to `_on_unhandled` below, so they never reach this frame.
+            # An except here would double-log when middleware-level errors do
+            # surface, with no benefit over the handler's own logging.
             finally:
                 duration_ms = (time.perf_counter() - start) * 1000.0
                 _logger.info(
@@ -95,11 +96,15 @@ def install_fastapi(app: Any, *, instrument: bool = True) -> None:
     @app.exception_handler(Exception)
     async def _on_unhandled(_request: Any, exc: Exception) -> Any:  # noqa: D401
         rid = current_request_id()
-        _logger.error(
+        # Pass `exc_info` explicitly rather than calling `traceback.format_exc()`:
+        # the latter relies on `sys.exc_info()` being populated, which is a
+        # Starlette implementation detail. structlog's `dict_tracebacks`
+        # processor renders the explicit tuple into structured fields.
+        _logger.exception(
             "unhandled_exception",
             exception_type=type(exc).__name__,
             exception_message=str(exc),
-            traceback=traceback.format_exc(),
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
         return JSONResponse(
             status_code=500,

@@ -80,7 +80,6 @@ class HTTPJSONLogExporter(LogExporter):  # type: ignore[misc]
         for item in batch:
             try:
                 lr = item.log_record
-                resource = item.log_record.resource if hasattr(item.log_record, "resource") else item.instrumentation_scope
                 resource_attrs = dict(getattr(item.log_record.resource, "attributes", {}) or {})
                 scope_name = getattr(item.instrumentation_scope, "name", "observability") or "observability"
                 key = (json.dumps(resource_attrs, sort_keys=True, default=str), scope_name)
