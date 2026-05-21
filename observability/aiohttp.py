@@ -34,11 +34,16 @@ from ._core import (
 _logger = get_logger("observability.aiohttp")
 
 
-def install_aiohttp(app: Any, *, instrument: bool = True) -> None:
+def install_aiohttp(app: Any, *, instrument: bool = False) -> None:
     """Attach observability middleware + error handler to an aiohttp app.
 
-    If `instrument` is True and `opentelemetry-instrumentation-aiohttp-server`
-    is installed, also activates aiohttp server auto-instrumentation.
+    By default this function does NOT activate AioHttpServerInstrumentor.
+    `init_observability()` → `auto_instrument()` already activates the
+    aiohttp_server instrumentor globally if its package is installed, and
+    activating it a second time wraps the already-wrapped handler — producing
+    duplicate OTel spans per inbound request. Pass `instrument=True` only if
+    you've called `init_observability(..., instrument=False)` and intend this
+    function to be the sole activator.
     """
     try:
         from aiohttp import web
