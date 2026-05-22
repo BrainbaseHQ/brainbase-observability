@@ -97,6 +97,55 @@ def clear_context() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stdlib LogRecord factory: inject contextvars onto every record
+# ---------------------------------------------------------------------------
+
+def _install_stdlib_contextvar_bridge() -> None:
+    """Wrap Python's LogRecord factory so every stdlib log line carries
+    Brainbase observability contextvars as record attributes.
+
+    Without this, stdlib loggers (temporalio.activity, httpx, sqlalchemy,
+    redis-py, asyncpg, anything calling `logging.getLogger(...)`) reach
+    Loki and the OTel collector via the LoggingHandler bridge but with
+    NO `thread_id` / `request_id` fields — only structlog calls flow
+    through `_inject_context` and carry them. A Loki query like
+    `{thread_id="..."}` would miss every stdlib line.
+
+    The LogRecord factory is a process-global hook (`logging.setLogRecordFactory`)
+    so this enriches EVERY record regardless of which logger emitted it.
+    OTel's LoggingHandler serializes record attributes as OTel LogRecord
+    attributes, so the fields ride straight through to whatever the
+    collector forwards to (Grafana Loki, Tempo, etc).
+
+    Idempotent: a module-level flag on the `logging` module prevents
+    wrapper stacking on repeated `init_observability()` calls.
+    """
+    if getattr(logging, "_brainbase_obs_factory_installed", False):
+        return
+    parent_factory = logging.getLogRecordFactory()
+
+    def _factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = parent_factory(*args, **kwargs)
+        # Don't clobber attributes a caller (or another factory) set first.
+        if not hasattr(record, "thread_id"):
+            tid = _thread_id_var.get()
+            if tid is not None:
+                record.thread_id = tid
+        if not hasattr(record, "request_id"):
+            rid = _request_id_var.get()
+            if rid is not None:
+                record.request_id = rid
+        if not hasattr(record, "service"):
+            record.service = _service_name
+        if not hasattr(record, "environment"):
+            record.environment = _environment
+        return record
+
+    logging.setLogRecordFactory(_factory)
+    setattr(logging, "_brainbase_obs_factory_installed", True)
+
+
+# ---------------------------------------------------------------------------
 # structlog processor: inject context into every event dict
 # ---------------------------------------------------------------------------
 
@@ -440,6 +489,11 @@ def init_observability(
         level=level_num,
         force=True,
     )
+
+    # Install the LogRecord factory BEFORE _init_otel attaches its
+    # LoggingHandler — otherwise stdlib records would already be emitted
+    # without thread_id / request_id attributes during the brief window.
+    _install_stdlib_contextvar_bridge()
 
     pretty = os.getenv("LOG_PRETTY", "0") == "1" or _environment in {"dev", "local"}
     renderer: Any = (
