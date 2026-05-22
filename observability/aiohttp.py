@@ -38,32 +38,19 @@ _logger = get_logger("observability.aiohttp")
 def install_aiohttp(app: Any, *, instrument: bool = False) -> None:
     """Attach observability middleware + error handler to an aiohttp app.
 
-    By default this function does NOT activate AioHttpServerInstrumentor.
-    `init_observability()` → `auto_instrument()` already activates the
-    aiohttp_server instrumentor globally if its package is installed, and
-    activating it a second time wraps the already-wrapped handler — producing
-    duplicate OTel spans per inbound request. Pass `instrument=True` only if
-    you've called `init_observability(..., instrument=False)` and intend this
-    function to be the sole activator.
+    The `instrument` parameter is accepted for back-compat with v0.3.x
+    callers but ignored in v0.4.0+. Use `ddtrace-run` /
+    `opentelemetry-instrument` as the process launcher if you want
+    aiohttp auto-instrumentation.
     """
+    del instrument  # back-compat shim — accepted but unused.
+
     try:
         from aiohttp import web
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "install_aiohttp() requires aiohttp to be installed"
         ) from exc
-
-    if instrument:
-        try:
-            from opentelemetry.instrumentation.aiohttp_server import (
-                AioHttpServerInstrumentor,
-            )
-
-            AioHttpServerInstrumentor().instrument()
-        except ImportError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            _logger.warning("aiohttp auto-instrumentation failed: %s", exc)
 
     @web.middleware
     async def observability_middleware(request: Any, handler: Any) -> Any:

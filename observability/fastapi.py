@@ -39,9 +39,14 @@ _logger = get_logger("observability.fastapi")
 def install_fastapi(app: Any, *, instrument: bool = True) -> None:
     """Attach request middleware + global exception handler to a FastAPI app.
 
-    If `instrument` is True and `opentelemetry-instrumentation-fastapi` is
-    installed, also activates FastAPI auto-instrumentation on the app.
+    The `instrument` parameter is accepted for back-compat with v0.3.x
+    callers but ignored in v0.4.0+. Use `ddtrace-run` /
+    `opentelemetry-instrument` as the process launcher if you want
+    FastAPI auto-instrumentation; that path is more reliable than
+    activating the instrumentor manually here.
     """
+    del instrument  # back-compat shim — accepted but unused.
+
     try:
         from fastapi import Request
         from fastapi.responses import JSONResponse
@@ -50,16 +55,6 @@ def install_fastapi(app: Any, *, instrument: bool = True) -> None:
         raise RuntimeError(
             "install_fastapi() requires fastapi to be installed"
         ) from exc
-
-    if instrument:
-        try:
-            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-            FastAPIInstrumentor().instrument_app(app)
-        except ImportError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            _logger.warning("FastAPI auto-instrumentation failed: %s", exc)
 
     class _ObservabilityMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next: Any) -> Any:

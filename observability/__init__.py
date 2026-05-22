@@ -1,18 +1,21 @@
 """Brainbase shared observability package.
 
-Vendor this directory verbatim into any Python service. Call
+Install via `pip install brainbase-observability @ git+…@v0.4.0`. Call
 `init_observability(service_name=...)` once at startup, then use
 `get_logger(__name__)` everywhere. Inside `except` blocks, prefer
 `logger.exception("...")` over `logger.error("...")` so the traceback
 is captured.
 
-Logs are emitted in three places simultaneously (best-effort, fire-and-forget):
-  1. stdout (always — JSON in prod, pretty in dev)
-  2. Grafana Loki (if GRAFANA_LOKI_URL / USER / TOKEN are set)
-  3. OTel collector (if OTEL_COLLECTOR_URL is set)
+v0.4.0 — logs go to stdout only. Render Log Stream (or any other
+platform-level log forwarder) is responsible for shipping them to a
+backend like Datadog. There is no in-process HTTP push from this
+package, which means no shipping bugs and no `GRAFANA_LOKI_*` /
+`OTEL_COLLECTOR_URL` env vars to manage.
 
-Failure in any sink is swallowed and surfaced as a one-line stderr warning;
-it never raises into application code.
+If you want APM traces, run your service under `ddtrace-run` or
+`opentelemetry-instrument` — both auto-instrument FastAPI / aiohttp /
+httpx / asyncpg / redis / etc. and propagate trace context across
+service boundaries.
 
 Public API:
     init_observability(service_name, *, version=None, environment=None, level="INFO")
@@ -28,7 +31,6 @@ Public API:
 from __future__ import annotations
 
 from ._core import (
-    auto_instrument,
     bind_context,
     bind_request_id,
     bind_thread_id,
@@ -48,5 +50,4 @@ __all__ = [
     "current_thread_id",
     "bind_context",
     "clear_context",
-    "auto_instrument",
 ]
