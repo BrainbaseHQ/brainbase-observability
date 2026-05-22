@@ -19,6 +19,8 @@ Public API:
     get_logger(name=None) -> structlog.BoundLogger
     bind_request_id(rid: str | None = None) -> str
     current_request_id() -> str | None
+    bind_thread_id(tid: str | None) -> str | None
+    current_thread_id() -> str | None
     bind_context(**kv) -> None
     clear_context() -> None
 """
@@ -29,8 +31,10 @@ from ._core import (
     auto_instrument,
     bind_context,
     bind_request_id,
+    bind_thread_id,
     clear_context,
     current_request_id,
+    current_thread_id,
     get_logger,
     init_observability,
 )
@@ -40,6 +44,8 @@ __all__ = [
     "get_logger",
     "bind_request_id",
     "current_request_id",
+    "bind_thread_id",
+    "current_thread_id",
     "bind_context",
     "clear_context",
     "auto_instrument",

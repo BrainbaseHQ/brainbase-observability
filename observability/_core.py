@@ -41,6 +41,7 @@ _internal_logger = logging.getLogger("observability._core")
 # converts to a dict, so we never have to defend against accidental in-place
 # mutation of a shared default object.
 _request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+_thread_id_var: ContextVar[str | None] = ContextVar("thread_id", default=None)
 _extra_context_var: ContextVar[dict[str, Any] | None] = ContextVar(
     "extra_context", default=None
 )
@@ -65,6 +66,22 @@ def current_request_id() -> str | None:
     return _request_id_var.get()
 
 
+def bind_thread_id(tid: str | None) -> str | None:
+    """Bind a Brainbase thread_id to the current async context. Returns the bound id.
+
+    Unlike `bind_request_id`, this does NOT generate a synthetic value when
+    `tid` is None — thread_id is a domain identifier; we either have it from
+    the inbound request / job payload or we don't. Pass None to explicitly
+    clear (e.g., at job teardown).
+    """
+    _thread_id_var.set(tid)
+    return tid
+
+
+def current_thread_id() -> str | None:
+    return _thread_id_var.get()
+
+
 def bind_context(**kv: Any) -> None:
     """Add arbitrary key/value pairs to the current context's structured log fields."""
     current = dict(_extra_context_var.get() or {})
@@ -73,8 +90,9 @@ def bind_context(**kv: Any) -> None:
 
 
 def clear_context() -> None:
-    """Clear request_id and bound context. Call at request end."""
+    """Clear request_id, thread_id, and bound context. Call at request end."""
     _request_id_var.set(None)
+    _thread_id_var.set(None)
     _extra_context_var.set(None)
 
 
@@ -86,6 +104,9 @@ def _inject_context(_logger: Any, _method_name: str, event_dict: dict[str, Any])
     rid = _request_id_var.get()
     if rid:
         event_dict.setdefault("request_id", rid)
+    tid = _thread_id_var.get()
+    if tid:
+        event_dict.setdefault("thread_id", tid)
     extras = _extra_context_var.get() or {}
     if extras:
         for k, v in extras.items():

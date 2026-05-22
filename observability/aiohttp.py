@@ -26,6 +26,7 @@ from typing import Any
 from ._core import (
     bind_context,
     bind_request_id,
+    bind_thread_id,
     clear_context,
     current_request_id,
     get_logger,
@@ -68,6 +69,9 @@ def install_aiohttp(app: Any, *, instrument: bool = False) -> None:
     async def observability_middleware(request: Any, handler: Any) -> Any:
         incoming = request.headers.get("X-Request-ID") or request.headers.get("traceparent")
         rid = bind_request_id(incoming)
+        header_tid = request.headers.get("X-Thread-ID")
+        if header_tid:
+            bind_thread_id(header_tid)
         bind_context(
             http_method=request.method,
             http_path=request.path,

@@ -27,6 +27,7 @@ from typing import Any
 from ._core import (
     bind_context,
     bind_request_id,
+    bind_thread_id,
     clear_context,
     current_request_id,
     get_logger,
@@ -64,6 +65,18 @@ def install_fastapi(app: Any, *, instrument: bool = True) -> None:
         async def dispatch(self, request: Request, call_next: Any) -> Any:
             incoming = request.headers.get("X-Request-ID") or request.headers.get("traceparent")
             rid = bind_request_id(incoming)
+
+            # thread_id: prefer explicit X-Thread-ID header (set by upstream
+            # observability-aware services), fall back to the path param if
+            # the route declares one (e.g. /threads/{thread_id}/...). path
+            # params aren't populated until routing resolves, which happens
+            # inside call_next; we set whatever the header gives us upfront
+            # and re-bind from path params just before the downstream call
+            # actually runs by hooking via state.
+            header_tid = request.headers.get("X-Thread-ID")
+            if header_tid:
+                bind_thread_id(header_tid)
+
             bind_context(
                 http_method=request.method,
                 http_path=request.url.path,
@@ -76,6 +89,9 @@ def install_fastapi(app: Any, *, instrument: bool = True) -> None:
                 response = await call_next(request)
                 status_code = response.status_code
                 response.headers["X-Request-ID"] = rid
+                tid = request.path_params.get("thread_id") if hasattr(request, "path_params") else None
+                if tid:
+                    response.headers["X-Thread-ID"] = str(tid)
                 return response
             # No `except Exception` here: route-raised exceptions are caught by
             # Starlette's ExceptionMiddleware (which sits inside call_next) and
