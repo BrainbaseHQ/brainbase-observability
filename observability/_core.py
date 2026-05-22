@@ -304,7 +304,10 @@ def _otel_processor(
     try:
         import json as _json
 
-        from opentelemetry.sdk._logs import LogRecord  # type: ignore[attr-defined]
+        # LogRecord is the API-level class exported from `opentelemetry._logs`
+        # (the SDK package re-exports ReadableLogRecord / ReadWriteLogRecord
+        # but NOT LogRecord itself — that path raises ImportError at runtime).
+        from opentelemetry._logs import LogRecord
 
         body = _json.dumps(event_dict, default=str, separators=(",", ":"))
         severity = _OTEL_SEVERITY.get(method_name.lower(), 9)
